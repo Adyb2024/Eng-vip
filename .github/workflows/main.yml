@@ -1,33 +1,27 @@
-name: Telegram Bot CI
+name: Run Telegram Bot
 
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:  # للتشغيل اليدوي
   schedule:
-    - cron: '0 */6 * * *' # سيعاد تشغيل البوت كل 6 ساعات لضمان بقائه حياً
-  workflow_dispatch: # يسمح لك بتشغيل البوت يدوياً
+    - cron: '*/10 * * * *'  # يعيد التشغيل كل 10 دقائق (اختياري للحفاظ على التشغيل)
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
-
+          python-version: '3.10'
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run Bot
+        run: pip install -r requirements.txt
+      - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: python main.py
