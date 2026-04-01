@@ -266,18 +266,83 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # إذا لم يتطابق أي زر
     await update.message.reply_text("لا أفهم هذا الأمر. استخدم الأزرار المتاحة.")
 
-# معالج النصوص الخاص بالأدمن (مراحل الإدخال)
 async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     state = context.user_data.get('admin_state')
 
-    # معالجة الأزرار الرئيسية في لوحة الأدمن
-    if text == "➕ إضافة حلقة":
+    # دالة مساعدة للمطابقة (تقبل النص مع الإيموجي أو بدونه)
+    def match_cmd(cmd_with_emoji, cmd_without):
+        return text == cmd_with_emoji or text == cmd_without
+
+    # ========== مراحل الإدخال (إذا كان الأدمن في حالة انتظار نص) ==========
+    if state:
+        # مراحل الإدخال كما هي (إضافة حلقة، تعديل، إلخ)
+        if state == 'waiting_ep_id':
+            context.user_data['temp_ep_id'] = text
+            context.user_data['admin_state'] = 'waiting_ep_title'
+            await update.message.reply_text("أرسل عنوان الحلقة:")
+        elif state == 'waiting_ep_title':
+            context.user_data['temp_ep_title'] = text
+            context.user_data['admin_state'] = 'waiting_ep_link'
+            await update.message.reply_text("أرسل رابط الحلقة:")
+        elif state == 'waiting_ep_link':
+            ep_id = context.user_data['temp_ep_id']
+            title = context.user_data['temp_ep_title']
+            link = text
+            add_episode(ep_id, title, link)
+            await update.message.reply_text(f"✅ تم إضافة الحلقة {title} بنجاح!")
+            context.user_data['admin_state'] = None
+            await show_main_menu(user_id, context, update.message, edit=False)
+        elif state == 'waiting_ep_title_edit':
+            ep_id = context.user_data['edit_ep_id']
+            if text.lower() != 'تخطي':
+                update_episode(ep_id, title=text)
+            context.user_data['admin_state'] = 'waiting_ep_link_edit'
+            await update.message.reply_text("أرسل الرابط الجديد (أو 'تخطي' للبقاء على نفس الرابط):")
+        elif state == 'waiting_ep_link_edit':
+            ep_id = context.user_data['edit_ep_id']
+            if text.lower() != 'تخطي':
+                update_episode(ep_id, link=text)
+            await update.message.reply_text("✅ تم تعديل الحلقة بنجاح!")
+            context.user_data['admin_state'] = None
+            await show_main_menu(user_id, context, update.message, edit=False)
+        elif state == 'waiting_task_target':
+            context.user_data['task_target'] = text
+            context.user_data['admin_state'] = 'waiting_task_desc'
+            await update.message.reply_text("أرسل وصف المهمة:")
+        elif state == 'waiting_task_desc':
+            desc = text
+            target = context.user_data['task_target']
+            task_type = context.user_data.get('task_type', 'channel')
+            add_task(task_type, target, desc)
+            await update.message.reply_text(f"✅ تم إضافة المهمة '{desc}' بنجاح!")
+            context.user_data['admin_state'] = None
+            await show_main_menu(user_id, context, update.message, edit=False)
+        elif state == 'waiting_broadcast':
+            users = users_col.find()
+            success = 0
+            fail = 0
+            for user in users:
+                try:
+                    await context.bot.send_message(chat_id=user['user_id'], text=text, parse_mode="Markdown")
+                    success += 1
+                except Exception:
+                    fail += 1
+            await update.message.reply_text(f"📢 تم الإرسال\n✅ نجح: {success}\n❌ فشل: {fail}")
+            context.user_data['admin_state'] = None
+            await show_main_menu(user_id, context, update.message, edit=False)
+        else:
+            await update.message.reply_text("حدث خطأ غير متوقع. جرب /start.")
+        return
+
+    # ========== أوامر لوحة التحكم (بدون مراحل إدخال) ==========
+    if match_cmd("➕ إضافة حلقة", "إضافة حلقة"):
         context.user_data['admin_state'] = 'waiting_ep_id'
         await update.message.reply_text("أرسل رقم الحلقة (مثال: 1):", reply_markup=ReplyKeyboardRemove())
         return
-    elif text == "📝 تعديل حلقة":
+
+    elif match_cmd("📝 تعديل حلقة", "تعديل حلقة"):
         episodes = get_episodes()
         if not episodes:
             await update.message.reply_text("لا توجد حلقات لتعديلها.")
@@ -285,7 +350,8 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         keyboard = ReplyKeyboardMarkup([[f"📝 {ep['title']} ({ep['_id']})"] for ep in episodes] + [["🔙 رجوع"]], resize_keyboard=True)
         await update.message.reply_text("اختر الحلقة لتعديلها:", reply_markup=keyboard)
         return
-    elif text == "🗑 حذف حلقة":
+
+    elif match_cmd("🗑 حذف حلقة", "حذف حلقة"):
         episodes = get_episodes()
         if not episodes:
             await update.message.reply_text("لا توجد حلقات لحذفها.")
@@ -293,12 +359,14 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         keyboard = ReplyKeyboardMarkup([[f"🗑 {ep['title']} ({ep['_id']})"] for ep in episodes] + [["🔙 رجوع"]], resize_keyboard=True)
         await update.message.reply_text("اختر الحلقة لحذفها:", reply_markup=keyboard)
         return
-    elif text == "📢 إضافة مهمة":
+
+    elif match_cmd("📢 إضافة مهمة", "إضافة مهمة"):
         context.user_data['admin_state'] = 'waiting_task_type'
         keyboard = ReplyKeyboardMarkup([["قناة تليجرام", "تويتر"], ["فيسبوك", "إنستا", "تيك توك"], ["🔙 رجوع"]], resize_keyboard=True)
         await update.message.reply_text("اختر نوع المهمة:", reply_markup=keyboard)
         return
-    elif text == "📋 عرض المهام":
+
+    elif match_cmd("📋 عرض المهام", "عرض المهام"):
         tasks = get_tasks()
         if not tasks:
             await update.message.reply_text("لا توجد مهام حالياً.")
@@ -308,7 +376,8 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             msg += f"🔹 {t['description']}\n   النوع: {t['type']}\n   الهدف: {t['target']}\n   المعرف: `{t['_id']}`\n\n"
         await update.message.reply_text(msg, parse_mode="Markdown")
         return
-    elif text == "🗑 حذف مهمة":
+
+    elif match_cmd("🗑 حذف مهمة", "حذف مهمة"):
         tasks = get_tasks()
         if not tasks:
             await update.message.reply_text("لا توجد مهام لحذفها.")
@@ -316,7 +385,8 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         keyboard = ReplyKeyboardMarkup([[t['description']] for t in tasks] + [["🔙 رجوع"]], resize_keyboard=True)
         await update.message.reply_text("اختر المهمة لحذفها:", reply_markup=keyboard)
         return
-    elif text == "📊 الإحصائيات":
+
+    elif match_cmd("📊 الإحصائيات", "الإحصائيات"):
         episodes = get_episodes()
         users_count = users_col.count_documents({})
         msg = f"📊 *الإحصائيات*\n\n👥 عدد المستخدمين: {users_count}\n🎬 عدد الحلقات: {len(episodes)}\n\n*أكثر الحلقات مشاهدة:*\n"
@@ -325,17 +395,20 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             msg += f"• {ep['title']}: {ep['views']} مشاهدة\n"
         await update.message.reply_text(msg, parse_mode="Markdown")
         return
-    elif text == "📢 إرسال إشعار":
+
+    elif match_cmd("📢 إرسال إشعار", "إرسال إشعار"):
         context.user_data['admin_state'] = 'waiting_broadcast'
         await update.message.reply_text("أرسل الرسالة التي تريد بثها لجميع المستخدمين (يمكن استخدام Markdown):", reply_markup=ReplyKeyboardRemove())
         return
-    elif text == "🔄 تبديل الوضع":
+
+    elif match_cmd("🔄 تبديل الوضع", "تبديل الوضع"):
         current = get_verification_mode()
         new_mode = 'auto' if current == 'manual' else 'manual'
         set_verification_mode(new_mode)
         await update.message.reply_text(f"تم التبديل إلى الوضع {'الآلي' if new_mode == 'auto' else 'اليدوي'}")
         return
-    elif text == "🔐 طلبات التحقق المعلقة":
+
+    elif match_cmd("🔐 طلبات التحقق المعلقة", "طلبات التحقق المعلقة"):
         pendings = list(pending_verifications.find({'status': 'pending'}))
         if not pendings:
             await update.message.reply_text("لا توجد طلبات تحقق معلقة.")
@@ -353,105 +426,17 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ])
             await update.message.reply_text("اختر الإجراء:", reply_markup=keyboard)
         return
-    elif text == "🔙 رجوع":
+
+    elif match_cmd("🔙 رجوع", "رجوع"):
         await show_main_menu(user_id, context, update.message, edit=False)
         return
 
-    # معالجة اختيار حلقة للتعديل/الحذف
-    if text.startswith("📝 "):
-        ep_id = text.split("(")[-1].rstrip(")")
-        context.user_data['edit_ep_id'] = ep_id
-        context.user_data['admin_state'] = 'waiting_ep_title_edit'
-        await update.message.reply_text("أرسل العنوان الجديد (أو 'تخطي' للبقاء على نفس العنوان):", reply_markup=ReplyKeyboardRemove())
-        return
-    if text.startswith("🗑 "):
-        ep_id = text.split("(")[-1].rstrip(")")
-        delete_episode(ep_id)
-        await update.message.reply_text("✅ تم حذف الحلقة بنجاح!")
-        await show_main_menu(user_id, context, update.message, edit=False)
-        return
-
-    # معالجة اختيار مهمة للحذف
-    if text in [t['description'] for t in get_tasks()]:
-        task = tasks_col.find_one({'description': text})
-        if task:
-            delete_task(str(task['_id']))
-            await update.message.reply_text("✅ تم حذف المهمة بنجاح!")
-            await show_main_menu(user_id, context, update.message, edit=False)
-        return
-
-    # معالجة اختيار نوع المهمة
-    if text in ["قناة تليجرام", "تويتر", "فيسبوك", "إنستا", "تيك توك"]:
-        task_type_map = {
-            "قناة تليجرام": "channel",
-            "تويتر": "twitter",
-            "فيسبوك": "facebook",
-            "إنستا": "instagram",
-            "تيك توك": "tiktok"
-        }
-        context.user_data['task_type'] = task_type_map[text]
-        context.user_data['admin_state'] = 'waiting_task_target'
-        await update.message.reply_text("أرسل معرف الحساب (مثال: username):", reply_markup=ReplyKeyboardRemove())
-        return
-
-    # معالجة مراحل الإدخال
-    if state == 'waiting_ep_id':
-        context.user_data['temp_ep_id'] = text
-        context.user_data['admin_state'] = 'waiting_ep_title'
-        await update.message.reply_text("أرسل عنوان الحلقة:")
-    elif state == 'waiting_ep_title':
-        context.user_data['temp_ep_title'] = text
-        context.user_data['admin_state'] = 'waiting_ep_link'
-        await update.message.reply_text("أرسل رابط الحلقة:")
-    elif state == 'waiting_ep_link':
-        ep_id = context.user_data['temp_ep_id']
-        title = context.user_data['temp_ep_title']
-        link = text
-        add_episode(ep_id, title, link)
-        await update.message.reply_text(f"✅ تم إضافة الحلقة {title} بنجاح!")
-        context.user_data['admin_state'] = None
-        await show_main_menu(user_id, context, update.message, edit=False)
-    elif state == 'waiting_ep_title_edit':
-        ep_id = context.user_data['edit_ep_id']
-        if text.lower() != 'تخطي':
-            update_episode(ep_id, title=text)
-        context.user_data['admin_state'] = 'waiting_ep_link_edit'
-        await update.message.reply_text("أرسل الرابط الجديد (أو 'تخطي' للبقاء على نفس الرابط):")
-    elif state == 'waiting_ep_link_edit':
-        ep_id = context.user_data['edit_ep_id']
-        if text.lower() != 'تخطي':
-            update_episode(ep_id, link=text)
-        await update.message.reply_text("✅ تم تعديل الحلقة بنجاح!")
-        context.user_data['admin_state'] = None
-        await show_main_menu(user_id, context, update.message, edit=False)
-    elif state == 'waiting_task_target':
-        context.user_data['task_target'] = text
-        context.user_data['admin_state'] = 'waiting_task_desc'
-        await update.message.reply_text("أرسل وصف المهمة:")
-    elif state == 'waiting_task_desc':
-        desc = text
-        target = context.user_data['task_target']
-        task_type = context.user_data.get('task_type', 'channel')
-        add_task(task_type, target, desc)
-        await update.message.reply_text(f"✅ تم إضافة المهمة '{desc}' بنجاح!")
-        context.user_data['admin_state'] = None
-        await show_main_menu(user_id, context, update.message, edit=False)
-    elif state == 'waiting_broadcast':
-        users = users_col.find()
-        success = 0
-        fail = 0
-        for user in users:
-            try:
-                await context.bot.send_message(chat_id=user['user_id'], text=text, parse_mode="Markdown")
-                success += 1
-            except Exception:
-                fail += 1
-        await update.message.reply_text(f"📢 تم الإرسال\n✅ نجح: {success}\n❌ فشل: {fail}")
-        context.user_data['admin_state'] = None
-        await show_main_menu(user_id, context, update.message, edit=False)
-    else:
-        await update.message.reply_text("لا أفهم هذا الأمر. استخدم الأزرار المتاحة.")
-
+    # ========== إذا لم يتطابق أي أمر ==========
+    await update.message.reply_text(
+        "❓ لم أتعرف على الأمر. يمكنك استخدام الأزرار أدناه أو كتابة:\n"
+        "• إضافة حلقة\n• تعديل حلقة\n• حذف حلقة\n• إضافة مهمة\n• عرض المهام\n• حذف مهمة\n• الإحصائيات\n• إرسال إشعار\n• تبديل الوضع\n• طلبات التحقق المعلقة\n• رجوع",
+        reply_markup=get_admin_keyboard()
+    )
 # معالج الصور
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
