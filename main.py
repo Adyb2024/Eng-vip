@@ -1,7 +1,7 @@
 import os
 import logging
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from pymongo import MongoClient
 from bson import ObjectId
@@ -25,7 +25,7 @@ pending_verifications = db['pending_verifications']
 users_col = db['users']
 settings_col = db['settings']
 
-# دوال مساعدة للقاعدة
+# دوال مساعدة (نفس السابق)
 def get_setting(key, default=None):
     s = settings_col.find_one({'_id': key})
     return s['value'] if s else default
@@ -100,6 +100,7 @@ def register_user(user_id, username=None):
         upsert=True
     )
 
+# التحقق من الاشتراك في القناة
 async def is_subscribed(user_id, context):
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
@@ -108,6 +109,7 @@ async def is_subscribed(user_id, context):
         logging.error(f"خطأ في التحقق من الاشتراك: {e}")
         return False
 
+# التحقق من المهام الأخرى
 async def check_other_tasks(user_id):
     incomplete = []
     tasks = get_tasks()
@@ -126,6 +128,34 @@ async def check_other_tasks(user_id):
             incomplete.append(task)
     return incomplete
 
+# بناء لوحة مفاتيح نصية للقائمة الرئيسية
+def get_main_keyboard(user_id, tasks, episodes):
+    keyboard = []
+    if tasks:
+        for task in tasks:
+            keyboard.append([KeyboardButton(f"✅ {task['description']}")])
+        keyboard.append([KeyboardButton("🔄 تحديث")])
+    elif episodes:
+        for ep in episodes:
+            keyboard.append([KeyboardButton(f"🎬 {ep['title']}")])
+        keyboard.append([KeyboardButton("🔄 تحديث")])
+    else:
+        keyboard.append([KeyboardButton("🔄 تحديث")])
+    if user_id == ADMIN_ID:
+        keyboard.append([KeyboardButton("⚙️ لوحة التحكم")])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+# بناء لوحة مفاتيح نصية للأدمن
+def get_admin_keyboard():
+    keyboard = [
+        ["➕ إضافة حلقة", "📝 تعديل حلقة", "🗑 حذف حلقة"],
+        ["📢 إضافة مهمة", "📋 عرض المهام", "🗑 حذف مهمة"],
+        ["📊 الإحصائيات", "📢 إرسال إشعار", "🔄 تبديل الوضع"],
+        ["🔐 طلبات التحقق المعلقة", "🔙 رجوع"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+# عرض القائمة الرئيسية باستخدام أزرار نصية
 async def show_main_menu(user_id, context, message, edit=False):
     # التحقق من القناة الإجبارية
     if not await is_subscribed(user_id, context):
@@ -134,76 +164,294 @@ async def show_main_menu(user_id, context, message, edit=False):
             link = f"https://t.me/{CHANNEL_ID[4:]}"
         else:
             link = f"https://t.me/{CHANNEL_ID.lstrip('@')}"
-        keyboard = [
-            [InlineKeyboardButton("انضم للقناة أولاً 📢", url=link)],
-            [InlineKeyboardButton("✅ تم الاشتراك ✅ تحقّق الآن", callback_data="check_sub")]
-        ]
-        text = "⚠️ توقف! للاستفادة من البوت، يجب عليك الاشتراك في القناة أولاً."
-        if edit:
-            await message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            await message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        text = "⚠️ توقف! للاستفادة من البوت، يجب عليك الاشتراك في القناة أولاً.\n\n"
+        text += f"📢 [انضم للقناة]({link})\n\n"
+        text += "بعد الاشتراك، اضغط على الزر أدناه للتحقق."
+        keyboard = ReplyKeyboardMarkup([["✅ تم الاشتراك ✅ تحقّق الآن"]], resize_keyboard=True)
+        await message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
         return
 
     # بقية المهام
     other_tasks = await check_other_tasks(user_id)
-    keyboard = []
     if other_tasks:
-        for task in other_tasks:
-            task_type = task['type']
-            target = task['target']
-            desc = task['description']
-            if task_type == 'twitter':
-                url = f"https://twitter.com/{target}"
-            elif task_type == 'facebook':
-                url = f"https://www.facebook.com/{target}"
-            elif task_type == 'instagram':
-                url = f"https://www.instagram.com/{target}"
-            elif task_type == 'tiktok':
-                url = f"https://www.tiktok.com/@{target}"
-            else:
-                url = None
-            if url:
-                keyboard.append([InlineKeyboardButton(f"📢 {desc}", url=url)])
-            keyboard.append([InlineKeyboardButton(f"✅ تمت المتابعة ({desc})", callback_data=f"verify_{task['_id']}")])
-        keyboard.append([InlineKeyboardButton("🔄 تحديث", callback_data="refresh")])
+        keyboard = get_main_keyboard(user_id, other_tasks, [])
         text = "🎯 للمتابعة، يرجى إكمال المهام التالية:\n"
         for t in other_tasks:
             text += f"• {t['description']}\n"
-        text += "\nبعد تنفيذ المهمة، اضغط على زر 'تمت المتابعة' وأرسل لقطة شاشة."
+        text += "\nبعد تنفيذ المهمة، اضغط على الزر المطابق لها وأرسل لقطة شاشة."
         if get_verification_mode() == 'auto':
             text += "\n🟢 *الوضع الآلي مفعل*: سيتم قبول طلبك تلقائياً."
         else:
             text += "\n🔴 *الوضع اليدوي مفعل*: سيتم مراجعة طلبك من قبل الأدمن."
-    else:
-        episodes = get_episodes()
-        if episodes:
-            for ep in episodes:
-                ep_id = ep['_id']
-                title = ep['title']
-                keyboard.append([InlineKeyboardButton(f"🎬 {title}", callback_data=f"ep_{ep_id}")])
-            text = "🎬 *مرحباً بك!*\nاختر الحلقة التي تريد مشاهدتها:"
-        else:
-            keyboard.append([InlineKeyboardButton("📭 لا توجد حلقات مضافة", callback_data="none")])
-            text = "📭 لا توجد حلقات مضافة حالياً. تواصل مع الأدمن."
+        await message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+        return
 
-    if user_id == ADMIN_ID:
-        keyboard.append([InlineKeyboardButton("⚙️ لوحة التحكم", callback_data="admin_panel")])
+    # عرض الحلقات
+    episodes = get_episodes()
+    if episodes:
+        keyboard = get_main_keyboard(user_id, [], episodes)
+        text = "🎬 *مرحباً بك!*\nاختر الحلقة التي تريد مشاهدتها:"
+        await message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
     else:
-        keyboard.append([InlineKeyboardButton("🔄 تحديث", callback_data="refresh")])
+        keyboard = ReplyKeyboardMarkup([["🔄 تحديث"]], resize_keyboard=True)
+        await message.reply_text("📭 لا توجد حلقات مضافة حالياً. تواصل مع الأدمن.", reply_markup=keyboard)
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    if edit:
-        await message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    else:
-        await message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-
+# أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
     register_user(user_id, username)
     await show_main_menu(user_id, context, update.message, edit=False)
 
+# معالج الأزرار النصية (رسائل المستخدم)
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+
+    # التحقق من حالة الأدمن أولاً (إضافة حلقة، إلخ)
+    if user_id == ADMIN_ID and context.user_data.get('admin_state'):
+        await admin_text_handler(update, context)
+        return
+
+    # التعامل مع الأزرار النصية
+    if text == "✅ تم الاشتراك ✅ تحقّق الآن":
+        if await is_subscribed(user_id, context):
+            await update.message.reply_text("✅ أحسنت! تم التحقق من اشتراكك بنجاح.")
+            await show_main_menu(user_id, context, update.message, edit=False)
+        else:
+            await update.message.reply_text("❌ لم تشترك بعد! يرجى الانضمام للقناة والمحاولة مرة أخرى.")
+        return
+
+    if text == "🔄 تحديث":
+        await show_main_menu(user_id, context, update.message, edit=False)
+        return
+
+    # معالجة المهام (الضغط على زر مهمة)
+    tasks = get_tasks()
+    for task in tasks:
+        if text == f"✅ {task['description']}":
+            task_id = str(task['_id'])
+            context.user_data['pending_task_id'] = task_id
+            context.user_data['awaiting_screenshot'] = True
+            await update.message.reply_text(
+                "📸 يرجى إرسال لقطة شاشة تثبت إكمال المهمة.\nيمكنك إرسال الصورة الآن.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return
+
+    # معالجة الحلقات (الضغط على زر حلقة)
+    episodes = get_episodes()
+    for ep in episodes:
+        if text == f"🎬 {ep['title']}":
+            other_tasks = await check_other_tasks(user_id)
+            if other_tasks:
+                await update.message.reply_text("⚠️ يجب إكمال المهام أولاً!")
+                await show_main_menu(user_id, context, update.message, edit=False)
+                return
+            increment_views(ep['_id'])
+            text_msg = f"🎬 *{ep['title']}*\n\n{ep['link']}\n\n🎉 استمتع بالمشاهدة!"
+            await update.message.reply_text(text_msg, parse_mode="Markdown")
+            return
+
+    # لوحة التحكم للأدمن
+    if user_id == ADMIN_ID and text == "⚙️ لوحة التحكم":
+        await update.message.reply_text("🛠️ *لوحة تحكم الأدمن*", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
+        return
+
+    # أوامر الأدمن الأخرى (يتم معالجتها في admin_text_handler)
+    # إذا لم يتطابق أي زر، نرسل رسالة افتراضية
+    await update.message.reply_text("لا أفهم هذا الأمر. استخدم الأزرار المتاحة.")
+
+# معالج خاص للأدمن (لإدخال البيانات مثل رقم الحلقة)
+async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    state = context.user_data.get('admin_state')
+
+    # التعامل مع الأزرار النصية للوحة الأدمن
+    if text == "➕ إضافة حلقة":
+        context.user_data['admin_state'] = 'waiting_ep_id'
+        await update.message.reply_text("أرسل رقم الحلقة (مثال: 1):", reply_markup=ReplyKeyboardRemove())
+        return
+    elif text == "📝 تعديل حلقة":
+        episodes = get_episodes()
+        if not episodes:
+            await update.message.reply_text("لا توجد حلقات لتعديلها.")
+            return
+        keyboard = ReplyKeyboardMarkup([[f"📝 {ep['title']} ({ep['_id']})"] for ep in episodes] + [["🔙 رجوع"]], resize_keyboard=True)
+        await update.message.reply_text("اختر الحلقة لتعديلها:", reply_markup=keyboard)
+        return
+    elif text == "🗑 حذف حلقة":
+        episodes = get_episodes()
+        if not episodes:
+            await update.message.reply_text("لا توجد حلقات لحذفها.")
+            return
+        keyboard = ReplyKeyboardMarkup([[f"🗑 {ep['title']} ({ep['_id']})"] for ep in episodes] + [["🔙 رجوع"]], resize_keyboard=True)
+        await update.message.reply_text("اختر الحلقة لحذفها:", reply_markup=keyboard)
+        return
+    elif text == "📢 إضافة مهمة":
+        context.user_data['admin_state'] = 'waiting_task_type'
+        keyboard = ReplyKeyboardMarkup([["قناة تليجرام", "تويتر"], ["فيسبوك", "إنستا", "تيك توك"], ["🔙 رجوع"]], resize_keyboard=True)
+        await update.message.reply_text("اختر نوع المهمة:", reply_markup=keyboard)
+        return
+    elif text == "📋 عرض المهام":
+        tasks = get_tasks()
+        if not tasks:
+            await update.message.reply_text("لا توجد مهام حالياً.")
+            return
+        msg = "*المهام الحالية:*\n\n"
+        for t in tasks:
+            msg += f"🔹 {t['description']}\n   النوع: {t['type']}\n   الهدف: {t['target']}\n   المعرف: `{t['_id']}`\n\n"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
+    elif text == "🗑 حذف مهمة":
+        tasks = get_tasks()
+        if not tasks:
+            await update.message.reply_text("لا توجد مهام لحذفها.")
+            return
+        keyboard = ReplyKeyboardMarkup([[t['description']] for t in tasks] + [["🔙 رجوع"]], resize_keyboard=True)
+        await update.message.reply_text("اختر المهمة لحذفها:", reply_markup=keyboard)
+        return
+    elif text == "📊 الإحصائيات":
+        episodes = get_episodes()
+        users_count = users_col.count_documents({})
+        msg = f"📊 *الإحصائيات*\n\n👥 عدد المستخدمين: {users_count}\n🎬 عدد الحلقات: {len(episodes)}\n\n*أكثر الحلقات مشاهدة:*\n"
+        sorted_eps = sorted(episodes, key=lambda x: x['views'], reverse=True)[:5]
+        for ep in sorted_eps:
+            msg += f"• {ep['title']}: {ep['views']} مشاهدة\n"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
+    elif text == "📢 إرسال إشعار":
+        context.user_data['admin_state'] = 'waiting_broadcast'
+        await update.message.reply_text("أرسل الرسالة التي تريد بثها لجميع المستخدمين (يمكن استخدام Markdown):", reply_markup=ReplyKeyboardRemove())
+        return
+    elif text == "🔄 تبديل الوضع":
+        current = get_verification_mode()
+        new_mode = 'auto' if current == 'manual' else 'manual'
+        set_verification_mode(new_mode)
+        await update.message.reply_text(f"تم التبديل إلى الوضع {'الآلي' if new_mode == 'auto' else 'اليدوي'}")
+        return
+    elif text == "🔐 طلبات التحقق المعلقة":
+        pendings = list(pending_verifications.find({'status': 'pending'}))
+        if not pendings:
+            await update.message.reply_text("لا توجد طلبات تحقق معلقة.")
+            return
+        for p in pendings:
+            user = users_col.find_one({'user_id': p['user_id']})
+            username = user.get('username') if user else p['user_id']
+            task = tasks_col.find_one({'_id': ObjectId(p['task_id'])})
+            task_desc = task['description'] if task else 'غير معروف'
+            await update.message.reply_text(f"📝 *طلب من @{username}*\nالمهمة: {task_desc}\nالمرسل: {p['user_id']}")
+            # إرسال الصورة
+            await context.bot.send_photo(chat_id=user_id, photo=p['photo_file_id'])
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ موافقة", callback_data=f"approve_{p['_id']}")],
+                [InlineKeyboardButton("❌ رفض", callback_data=f"reject_{p['_id']}")]
+            ])
+            await update.message.reply_text("اختر الإجراء:", reply_markup=keyboard)
+        return
+    elif text == "🔙 رجوع":
+        await show_main_menu(user_id, context, update.message, edit=False)
+        return
+
+    # معالجة اختيار حلقة للتعديل/الحذف
+    if text.startswith("📝 "):
+        # تعديل حلقة
+        ep_id = text.split("(")[-1].rstrip(")")
+        context.user_data['edit_ep_id'] = ep_id
+        context.user_data['admin_state'] = 'waiting_ep_title_edit'
+        await update.message.reply_text("أرسل العنوان الجديد (أو 'تخطي' للبقاء على نفس العنوان):", reply_markup=ReplyKeyboardRemove())
+        return
+    if text.startswith("🗑 "):
+        # حذف حلقة
+        ep_id = text.split("(")[-1].rstrip(")")
+        delete_episode(ep_id)
+        await update.message.reply_text("✅ تم حذف الحلقة بنجاح!")
+        await show_main_menu(user_id, context, update.message, edit=False)
+        return
+
+    # معالجة اختيار مهمة للحذف
+    if text in [t['description'] for t in get_tasks()]:
+        task = tasks_col.find_one({'description': text})
+        if task:
+            delete_task(str(task['_id']))
+            await update.message.reply_text("✅ تم حذف المهمة بنجاح!")
+            await show_main_menu(user_id, context, update.message, edit=False)
+        return
+
+    # معالجة اختيار نوع المهمة
+    if text in ["قناة تليجرام", "تويتر", "فيسبوك", "إنستا", "تيك توك"]:
+        task_type_map = {
+            "قناة تليجرام": "channel",
+            "تويتر": "twitter",
+            "فيسبوك": "facebook",
+            "إنستا": "instagram",
+            "تيك توك": "tiktok"
+        }
+        context.user_data['task_type'] = task_type_map[text]
+        context.user_data['admin_state'] = 'waiting_task_target'
+        await update.message.reply_text("أرسل معرف الحساب (مثال: username):", reply_markup=ReplyKeyboardRemove())
+        return
+
+    # معالجة مراحل الإدخال
+    if state == 'waiting_ep_id':
+        context.user_data['temp_ep_id'] = text
+        context.user_data['admin_state'] = 'waiting_ep_title'
+        await update.message.reply_text("أرسل عنوان الحلقة:")
+    elif state == 'waiting_ep_title':
+        context.user_data['temp_ep_title'] = text
+        context.user_data['admin_state'] = 'waiting_ep_link'
+        await update.message.reply_text("أرسل رابط الحلقة:")
+    elif state == 'waiting_ep_link':
+        ep_id = context.user_data['temp_ep_id']
+        title = context.user_data['temp_ep_title']
+        link = text
+        add_episode(ep_id, title, link)
+        await update.message.reply_text(f"✅ تم إضافة الحلقة {title} بنجاح!")
+        context.user_data['admin_state'] = None
+        await show_main_menu(user_id, context, update.message, edit=False)
+    elif state == 'waiting_ep_title_edit':
+        ep_id = context.user_data['edit_ep_id']
+        if text.lower() != 'تخطي':
+            update_episode(ep_id, title=text)
+        context.user_data['admin_state'] = 'waiting_ep_link_edit'
+        await update.message.reply_text("أرسل الرابط الجديد (أو 'تخطي' للبقاء على نفس الرابط):")
+    elif state == 'waiting_ep_link_edit':
+        ep_id = context.user_data['edit_ep_id']
+        if text.lower() != 'تخطي':
+            update_episode(ep_id, link=text)
+        await update.message.reply_text("✅ تم تعديل الحلقة بنجاح!")
+        context.user_data['admin_state'] = None
+        await show_main_menu(user_id, context, update.message, edit=False)
+    elif state == 'waiting_task_target':
+        context.user_data['task_target'] = text
+        context.user_data['admin_state'] = 'waiting_task_desc'
+        await update.message.reply_text("أرسل وصف المهمة:")
+    elif state == 'waiting_task_desc':
+        desc = text
+        target = context.user_data['task_target']
+        task_type = context.user_data.get('task_type', 'channel')
+        add_task(task_type, target, desc)
+        await update.message.reply_text(f"✅ تم إضافة المهمة '{desc}' بنجاح!")
+        context.user_data['admin_state'] = None
+        await show_main_menu(user_id, context, update.message, edit=False)
+    elif state == 'waiting_broadcast':
+        users = users_col.find()
+        success = 0
+        fail = 0
+        for user in users:
+            try:
+                await context.bot.send_message(chat_id=user['user_id'], text=text, parse_mode="Markdown")
+                success += 1
+            except Exception:
+                fail += 1
+        await update.message.reply_text(f"📢 تم الإرسال\n✅ نجح: {success}\n❌ فشل: {fail}")
+        context.user_data['admin_state'] = None
+        await show_main_menu(user_id, context, update.message, edit=False)
+    else:
+        await update.message.reply_text("لا أفهم هذا الأمر. استخدم الأزرار المتاحة.")
+
+# معالج الصور
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.user_data.get('awaiting_screenshot'):
@@ -252,117 +500,14 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['pending_task_id'] = None
         await show_main_menu(user_id, context, update.message, edit=False)
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# معالج الاستعلامات (للأزرار الشفافة المتبقية – الموافقة/الرفض)
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
     data = query.data
 
-    if data == "check_sub":
-        if await is_subscribed(user_id, context):
-            await query.edit_message_text("✅ أحسنت! تم التحقق من اشتراكك بنجاح.")
-            await show_main_menu(user_id, context, query.message, edit=True)
-        else:
-            await query.answer("❌ لم تشترك بعد! يرجى الانضمام للقناة والمحاولة مرة أخرى.", show_alert=True)
-
-    elif data == "refresh":
-        await show_main_menu(user_id, context, query.message, edit=True)
-
-    elif data.startswith("verify_"):
-        task_id = data.split("_")[1]
-        context.user_data['pending_task_id'] = task_id
-        context.user_data['awaiting_screenshot'] = True
-        await query.edit_message_text("📸 يرجى إرسال لقطة شاشة تثبت إكمال المهمة.\nيمكنك إرسال الصورة الآن.")
-
-    elif data.startswith("ep_"):
-        ep_id = data.split("_")[1]
-        other_tasks = await check_other_tasks(user_id)
-        if other_tasks:
-            await query.answer("⚠️ يجب إكمال المهام أولاً!", show_alert=True)
-            await show_main_menu(user_id, context, query.message, edit=True)
-            return
-        episode = episodes_col.find_one({'_id': ep_id})
-        if episode:
-            increment_views(ep_id)
-            text = f"🎬 *{episode['title']}*\n\n{episode['link']}\n\n🎉 استمتع بالمشاهدة!"
-            await query.edit_message_text(text, parse_mode="Markdown")
-        else:
-            await query.edit_message_text("❌ الحلقة غير موجودة.")
-
-    elif data == "admin_panel":
-        if user_id != ADMIN_ID:
-            await query.answer("غير مصرح", show_alert=True)
-            return
-        mode = get_verification_mode()
-        mode_text = "🟢 الوضع الآلي" if mode == 'auto' else "🔴 الوضع اليدوي"
-        mode_button = InlineKeyboardButton(f"🔄 تبديل الوضع ({mode_text})", callback_data="toggle_mode")
-        keyboard = [
-            [InlineKeyboardButton("➕ إضافة حلقة", callback_data="admin_add_ep")],
-            [InlineKeyboardButton("📝 تعديل حلقة", callback_data="admin_edit_ep")],
-            [InlineKeyboardButton("🗑 حذف حلقة", callback_data="admin_del_ep")],
-            [InlineKeyboardButton("📢 إضافة مهمة", callback_data="admin_add_task")],
-            [InlineKeyboardButton("📋 عرض المهام", callback_data="admin_list_tasks")],
-            [InlineKeyboardButton("🗑 حذف مهمة", callback_data="admin_del_task")],
-            [InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats")],
-            [InlineKeyboardButton("📢 إرسال إشعار", callback_data="admin_broadcast")],
-            [mode_button],
-            [InlineKeyboardButton("🔐 طلبات التحقق المعلقة", callback_data="admin_pending")],
-            [InlineKeyboardButton("🔙 رجوع", callback_data="back_to_main")]
-        ]
-        await query.edit_message_text(
-            f"🛠️ *لوحة تحكم الأدمن*\n\nحالة التحقق: {mode_text}",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
-        )
-
-    elif data == "toggle_mode":
-        if user_id != ADMIN_ID:
-            return
-        current = get_verification_mode()
-        new_mode = 'auto' if current == 'manual' else 'manual'
-        set_verification_mode(new_mode)
-        await query.answer(f"تم التبديل إلى الوضع {'الآلي' if new_mode == 'auto' else 'اليدوي'}")
-        await button_handler(update, context)  # إعادة عرض اللوحة
-
-    elif data == "admin_pending":
-        if user_id != ADMIN_ID:
-            return
-        pendings = list(pending_verifications.find({'status': 'pending'}))
-        if not pendings:
-            await query.edit_message_text("لا توجد طلبات تحقق معلقة.")
-            return
-        keyboard = []
-        for p in pendings:
-            user = users_col.find_one({'user_id': p['user_id']})
-            username = user.get('username') if user else p['user_id']
-            task = tasks_col.find_one({'_id': ObjectId(p['task_id'])})
-            task_desc = task['description'] if task else 'غير معروف'
-            text = f"@{username} | {task_desc}"
-            keyboard.append([InlineKeyboardButton(text, callback_data=f"review_{p['_id']}")])
-        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel")])
-        await query.edit_message_text("اختر طلبًا للمراجعة:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("review_"):
-        pending_id = data.split("_")[1]
-        pending = pending_verifications.find_one({'_id': ObjectId(pending_id)})
-        if not pending:
-            await query.edit_message_text("الطلب غير موجود.")
-            return
-        user = users_col.find_one({'user_id': pending['user_id']})
-        username = user.get('username') if user else pending['user_id']
-        task = tasks_col.find_one({'_id': ObjectId(pending['task_id'])})
-        task_desc = task['description'] if task else 'غير معروف'
-        photo_file_id = pending.get('photo_file_id')
-        await query.edit_message_text(f"📝 *مراجعة الطلب*\nالمستخدم: @{username}\nالمهمة: {task_desc}", parse_mode="Markdown")
-        await context.bot.send_photo(chat_id=user_id, photo=photo_file_id)
-        keyboard = [
-            [InlineKeyboardButton("✅ موافقة", callback_data=f"approve_{pending_id}")],
-            [InlineKeyboardButton("❌ رفض", callback_data=f"reject_{pending_id}")],
-            [InlineKeyboardButton("🔙 رجوع", callback_data="admin_pending")]
-        ]
-        await context.bot.send_message(chat_id=user_id, text="اختر الإجراء:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("approve_"):
+    if data.startswith("approve_"):
         pending_id = data.split("_")[1]
         pending = pending_verifications.find_one({'_id': ObjectId(pending_id)})
         if pending:
@@ -372,178 +517,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
         await query.edit_message_text("✅ تمت الموافقة على الطلب.")
-        await show_main_menu(user_id, context, query.message, edit=False)
-
     elif data.startswith("reject_"):
         pending_id = data.split("_")[1]
         pending_verifications.delete_one({'_id': ObjectId(pending_id)})
         await query.edit_message_text("❌ تم رفض الطلب.")
-        await show_main_menu(user_id, context, query.message, edit=False)
-
-    elif data == "back_to_main":
-        await show_main_menu(user_id, context, query.message, edit=True)
-
-    elif data == "admin_add_ep":
-        context.user_data['admin_state'] = 'waiting_ep_id'
-        await query.edit_message_text("أرسل رقم الحلقة (مثال: 1):")
-
-    elif data == "admin_edit_ep":
-        episodes = get_episodes()
-        if not episodes:
-            await query.edit_message_text("لا توجد حلقات لتعديلها.")
-            return
-        keyboard = [[InlineKeyboardButton(f"{ep['title']} ({ep['_id']})", callback_data=f"edit_ep_{ep['_id']}")] for ep in episodes]
-        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel")])
-        await query.edit_message_text("اختر الحلقة لتعديلها:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("edit_ep_"):
-        ep_id = data.split("_")[2]
-        context.user_data['edit_ep_id'] = ep_id
-        context.user_data['admin_state'] = 'waiting_ep_title_edit'
-        await query.edit_message_text("أرسل العنوان الجديد (أو 'تخطي' للبقاء على نفس العنوان):")
-
-    elif data == "admin_del_ep":
-        episodes = get_episodes()
-        if not episodes:
-            await query.edit_message_text("لا توجد حلقات لحذفها.")
-            return
-        keyboard = [[InlineKeyboardButton(f"{ep['title']} ({ep['_id']})", callback_data=f"del_ep_{ep['_id']}")] for ep in episodes]
-        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel")])
-        await query.edit_message_text("اختر الحلقة لحذفها:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("del_ep_"):
-        ep_id = data.split("_")[2]
-        delete_episode(ep_id)
-        await query.edit_message_text("✅ تم حذف الحلقة بنجاح!")
-        await show_main_menu(user_id, context, query.message, edit=False)
-
-    elif data == "admin_add_task":
-        context.user_data['admin_state'] = 'waiting_task_type'
-        keyboard = [
-            [InlineKeyboardButton("قناة تليجرام", callback_data="task_type_channel")],
-            [InlineKeyboardButton("تويتر", callback_data="task_type_twitter")],
-            [InlineKeyboardButton("فيسبوك", callback_data="task_type_facebook")],
-            [InlineKeyboardButton("إنستا", callback_data="task_type_instagram")],
-            [InlineKeyboardButton("تيك توك", callback_data="task_type_tiktok")],
-            [InlineKeyboardButton("إلغاء", callback_data="admin_panel")]
-        ]
-        await query.edit_message_text("اختر نوع المهمة:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("task_type_"):
-        task_type = data.split("_")[2]  # channel, twitter, facebook, instagram, tiktok
-        context.user_data['task_type'] = task_type
-        context.user_data['admin_state'] = 'waiting_task_target'
-        await query.edit_message_text(f"أرسل معرف الحساب للمهمة من نوع {task_type} (مثال: username):")
-
-    elif data == "admin_list_tasks":
-        tasks = get_tasks()
-        if not tasks:
-            await query.edit_message_text("لا توجد مهام حالياً.")
-            return
-        text = "*المهام الحالية:*\n\n"
-        for t in tasks:
-            text += f"🔹 {t['description']}\n   النوع: {t['type']}\n   الهدف: {t['target']}\n   المعرف: `{t['_id']}`\n\n"
-        await query.edit_message_text(text, parse_mode="Markdown")
-
-    elif data == "admin_del_task":
-        tasks = get_tasks()
-        if not tasks:
-            await query.edit_message_text("لا توجد مهام لحذفها.")
-            return
-        keyboard = [[InlineKeyboardButton(t['description'], callback_data=f"del_task_{t['_id']}")] for t in tasks]
-        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel")])
-        await query.edit_message_text("اختر المهمة لحذفها:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("del_task_"):
-        task_id = data.split("_")[2]
-        delete_task(task_id)
-        await query.edit_message_text("✅ تم حذف المهمة بنجاح!")
-        await show_main_menu(user_id, context, query.message, edit=False)
-
-    elif data == "admin_stats":
-        episodes = get_episodes()
-        users_count = users_col.count_documents({})
-        text = f"📊 *الإحصائيات*\n\n👥 عدد المستخدمين: {users_count}\n🎬 عدد الحلقات: {len(episodes)}\n\n*أكثر الحلقات مشاهدة:*\n"
-        sorted_eps = sorted(episodes, key=lambda x: x['views'], reverse=True)[:5]
-        for ep in sorted_eps:
-            text += f"• {ep['title']}: {ep['views']} مشاهدة\n"
-        await query.edit_message_text(text, parse_mode="Markdown")
-
-    elif data == "admin_broadcast":
-        context.user_data['admin_state'] = 'waiting_broadcast'
-        await query.edit_message_text("أرسل الرسالة التي تريد بثها لجميع المستخدمين (يمكن استخدام Markdown):")
-
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        return
-    text = update.message.text
-    state = context.user_data.get('admin_state')
-
-    if state == 'waiting_ep_id':
-        context.user_data['temp_ep_id'] = text
-        context.user_data['admin_state'] = 'waiting_ep_title'
-        await update.message.reply_text("أرسل عنوان الحلقة:")
-
-    elif state == 'waiting_ep_title':
-        context.user_data['temp_ep_title'] = text
-        context.user_data['admin_state'] = 'waiting_ep_link'
-        await update.message.reply_text("أرسل رابط الحلقة:")
-
-    elif state == 'waiting_ep_link':
-        ep_id = context.user_data['temp_ep_id']
-        title = context.user_data['temp_ep_title']
-        link = text
-        add_episode(ep_id, title, link)
-        await update.message.reply_text(f"✅ تم إضافة الحلقة {title} بنجاح!")
-        context.user_data['admin_state'] = None
-        await show_main_menu(user_id, context, update.message, edit=False)
-
-    elif state == 'waiting_ep_title_edit':
-        ep_id = context.user_data['edit_ep_id']
-        if text.lower() != 'تخطي':
-            update_episode(ep_id, title=text)
-        context.user_data['admin_state'] = 'waiting_ep_link_edit'
-        await update.message.reply_text("أرسل الرابط الجديد (أو 'تخطي' للبقاء على نفس الرابط):")
-
-    elif state == 'waiting_ep_link_edit':
-        ep_id = context.user_data['edit_ep_id']
-        if text.lower() != 'تخطي':
-            update_episode(ep_id, link=text)
-        await update.message.reply_text("✅ تم تعديل الحلقة بنجاح!")
-        context.user_data['admin_state'] = None
-        await show_main_menu(user_id, context, update.message, edit=False)
-
-    elif state == 'waiting_task_target':
-        context.user_data['task_target'] = text
-        context.user_data['admin_state'] = 'waiting_task_desc'
-        await update.message.reply_text("أرسل وصف المهمة:")
-
-    elif state == 'waiting_task_desc':
-        desc = text
-        target = context.user_data['task_target']
-        task_type = context.user_data.get('task_type', 'channel')
-        add_task(task_type, target, desc)
-        await update.message.reply_text(f"✅ تم إضافة المهمة '{desc}' بنجاح!")
-        context.user_data['admin_state'] = None
-        await show_main_menu(user_id, context, update.message, edit=False)
-
-    elif state == 'waiting_broadcast':
-        users = users_col.find()
-        success = 0
-        fail = 0
-        for user in users:
-            try:
-                await context.bot.send_message(chat_id=user['user_id'], text=text, parse_mode="Markdown")
-                success += 1
-            except Exception as e:
-                fail += 1
-        await update.message.reply_text(f"📢 تم الإرسال\n✅ نجح: {success}\n❌ فشل: {fail}")
-        context.user_data['admin_state'] = None
-        await show_main_menu(user_id, context, update.message, edit=False)
-
-    else:
-        await update.message.reply_text("أرسل /start للبدء.")
+    await query.message.delete()  # حذف الرسالة بعد المعالجة
 
 def main():
     # التأكد من وجود مهمة القناة الافتراضية
@@ -551,9 +529,9 @@ def main():
         add_task('channel', CHANNEL_ID, f"الاشتراك في القناة", priority=1)
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    app.add_handler(CallbackQueryHandler(callback_handler))
     logging.info("🚀 البوت يعمل...")
     app.run_polling()
 
