@@ -25,7 +25,7 @@ pending_verifications = db['pending_verifications']
 users_col = db['users']
 settings_col = db['settings']
 
-# دوال مساعدة (نفس السابق)
+# دوال مساعدة
 def get_setting(key, default=None):
     s = settings_col.find_one({'_id': key})
     return s['value'] if s else default
@@ -66,7 +66,6 @@ def add_episode(ep_id, title, link):
         'views': 0,
         'created_at': datetime.now()
     })
-    logging.info(f"✅ تم إضافة حلقة: {ep_id} - {title}")
 
 def update_episode(ep_id, title=None, link=None):
     update_data = {}
@@ -105,8 +104,7 @@ async def is_subscribed(user_id, context):
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         return member.status in ['member', 'administrator', 'creator']
-    except Exception as e:
-        logging.error(f"خطأ في التحقق من الاشتراك: {e}")
+    except Exception:
         return False
 
 # التحقق من المهام الأخرى
@@ -155,11 +153,10 @@ def get_admin_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-# عرض القائمة الرئيسية باستخدام أزرار نصية
+# عرض القائمة الرئيسية
 async def show_main_menu(user_id, context, message, edit=False):
     # التحقق من القناة الإجبارية
     if not await is_subscribed(user_id, context):
-        # بناء رابط القناة
         if CHANNEL_ID.startswith('-100'):
             link = f"https://t.me/{CHANNEL_ID[4:]}"
         else:
@@ -203,17 +200,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_user(user_id, username)
     await show_main_menu(user_id, context, update.message, edit=False)
 
-# معالج الأزرار النصية (رسائل المستخدم)
+# أمر /admin للأدمن
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ هذا الأمر مخصص للأدمن فقط.")
+        return
+    await update.message.reply_text("🛠️ *لوحة تحكم الأدمن*", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
+
+# معالج الرسائل النصية (الأزرار النصية)
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
 
-    # التحقق من حالة الأدمن أولاً (إضافة حلقة، إلخ)
+    # إذا كان الأدمن في حالة إدخال (إضافة حلقة، إلخ)
     if user_id == ADMIN_ID and context.user_data.get('admin_state'):
         await admin_text_handler(update, context)
         return
 
-    # التعامل مع الأزرار النصية
+    # معالجة الأزرار النصية العامة
     if text == "✅ تم الاشتراك ✅ تحقّق الآن":
         if await is_subscribed(user_id, context):
             await update.message.reply_text("✅ أحسنت! تم التحقق من اشتراكك بنجاح.")
@@ -239,7 +244,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # معالجة الحلقات (الضغط على زر حلقة)
+    # معالجة الحلقات
     episodes = get_episodes()
     for ep in episodes:
         if text == f"🎬 {ep['title']}":
@@ -249,8 +254,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await show_main_menu(user_id, context, update.message, edit=False)
                 return
             increment_views(ep['_id'])
-            text_msg = f"🎬 *{ep['title']}*\n\n{ep['link']}\n\n🎉 استمتع بالمشاهدة!"
-            await update.message.reply_text(text_msg, parse_mode="Markdown")
+            msg = f"🎬 *{ep['title']}*\n\n{ep['link']}\n\n🎉 استمتع بالمشاهدة!"
+            await update.message.reply_text(msg, parse_mode="Markdown")
             return
 
     # لوحة التحكم للأدمن
@@ -258,17 +263,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🛠️ *لوحة تحكم الأدمن*", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
         return
 
-    # أوامر الأدمن الأخرى (يتم معالجتها في admin_text_handler)
-    # إذا لم يتطابق أي زر، نرسل رسالة افتراضية
+    # إذا لم يتطابق أي زر
     await update.message.reply_text("لا أفهم هذا الأمر. استخدم الأزرار المتاحة.")
 
-# معالج خاص للأدمن (لإدخال البيانات مثل رقم الحلقة)
+# معالج النصوص الخاص بالأدمن (مراحل الإدخال)
 async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     state = context.user_data.get('admin_state')
 
-    # التعامل مع الأزرار النصية للوحة الأدمن
+    # معالجة الأزرار الرئيسية في لوحة الأدمن
     if text == "➕ إضافة حلقة":
         context.user_data['admin_state'] = 'waiting_ep_id'
         await update.message.reply_text("أرسل رقم الحلقة (مثال: 1):", reply_markup=ReplyKeyboardRemove())
@@ -342,7 +346,6 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             task = tasks_col.find_one({'_id': ObjectId(p['task_id'])})
             task_desc = task['description'] if task else 'غير معروف'
             await update.message.reply_text(f"📝 *طلب من @{username}*\nالمهمة: {task_desc}\nالمرسل: {p['user_id']}")
-            # إرسال الصورة
             await context.bot.send_photo(chat_id=user_id, photo=p['photo_file_id'])
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ موافقة", callback_data=f"approve_{p['_id']}")],
@@ -356,14 +359,12 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # معالجة اختيار حلقة للتعديل/الحذف
     if text.startswith("📝 "):
-        # تعديل حلقة
         ep_id = text.split("(")[-1].rstrip(")")
         context.user_data['edit_ep_id'] = ep_id
         context.user_data['admin_state'] = 'waiting_ep_title_edit'
         await update.message.reply_text("أرسل العنوان الجديد (أو 'تخطي' للبقاء على نفس العنوان):", reply_markup=ReplyKeyboardRemove())
         return
     if text.startswith("🗑 "):
-        # حذف حلقة
         ep_id = text.split("(")[-1].rstrip(")")
         delete_episode(ep_id)
         await update.message.reply_text("✅ تم حذف الحلقة بنجاح!")
@@ -500,10 +501,9 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['pending_task_id'] = None
         await show_main_menu(user_id, context, update.message, edit=False)
 
-# معالج الاستعلامات (للأزرار الشفافة المتبقية – الموافقة/الرفض)
+# معالج الاستعلامات (للأزرار الشفافة في الموافقة/الرفض)
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
     await query.answer()
     data = query.data
 
@@ -521,14 +521,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending_id = data.split("_")[1]
         pending_verifications.delete_one({'_id': ObjectId(pending_id)})
         await query.edit_message_text("❌ تم رفض الطلب.")
-    await query.message.delete()  # حذف الرسالة بعد المعالجة
+    await query.message.delete()
 
 def main():
-    # التأكد من وجود مهمة القناة الافتراضية
+    # إضافة مهمة القناة الافتراضية إذا لم توجد مهام
     if tasks_col.count_documents({}) == 0:
         add_task('channel', CHANNEL_ID, f"الاشتراك في القناة", priority=1)
+
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
