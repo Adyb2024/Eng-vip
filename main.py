@@ -153,6 +153,7 @@ async def show_main_menu(user_id, context, message, edit=False):
             task_type = task['type']
             target = task['target']
             desc = task['description']
+            task_id = str(task['_id'])
             if task_type == 'twitter':
                 url = f"https://twitter.com/{target}"
             elif task_type == 'facebook':
@@ -164,13 +165,14 @@ async def show_main_menu(user_id, context, message, edit=False):
             else:
                 url = None
             if url:
-                keyboard.append([InlineKeyboardButton(f"📢 {desc}", url=url)])
-            keyboard.append([InlineKeyboardButton(f"✅ تمت المتابعة ({desc})", callback_data=f"verify_{task['_id']}")])
+                keyboard.append([InlineKeyboardButton(f"🔗 {desc}", url=url)])
+            # زر التحقق قصير ومباشر
+            keyboard.append([InlineKeyboardButton("✅ تمت المتابعة", callback_data=f"verify_{task_id}")])
         keyboard.append([InlineKeyboardButton("🔄 تحديث", callback_data="refresh")])
         text = "🎯 للمتابعة، يرجى إكمال المهام التالية:\n"
         for t in other_tasks:
             text += f"• {t['description']}\n"
-        text += "\nبعد تنفيذ المهمة، اضغط على زر 'تمت المتابعة' وأرسل لقطة شاشة."
+        text += "\n⚠️ *تنبيه:* اضغط على الرابط أولاً للانتقال إلى المهمة، ثم عد واضغط على 'تمت المتابعة' وأرسل لقطة الشاشة."
         if get_verification_mode() == 'auto':
             text += "\n🟢 *الوضع الآلي مفعل*: سيتم قبول طلبك تلقائياً."
         else:
@@ -270,9 +272,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("verify_"):
         task_id = data.split("_")[1]
+        # رسالة تذكيرية قبل طلب الصورة
+        await query.edit_message_text(
+            "📌 تأكد من أنك قمت بفتح الرابط الخاص بالمهمة أولاً.\n"
+            "بعد التأكد، أرسل لقطة شاشة تثبت إكمال المهمة.\n\n"
+            "يمكنك إرسال الصورة الآن."
+        )
         context.user_data['pending_task_id'] = task_id
         context.user_data['awaiting_screenshot'] = True
-        await query.edit_message_text("📸 يرجى إرسال لقطة شاشة تثبت إكمال المهمة.\nيمكنك إرسال الصورة الآن.")
 
     elif data.startswith("ep_"):
         ep_id = data.split("_")[1]
