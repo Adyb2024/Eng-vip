@@ -40,7 +40,10 @@ def set_verification_mode(mode):
     set_setting('verification_mode', mode)
 
 def get_tasks():
-    return list(tasks_col.find().sort('priority', -1))
+    tasks = list(tasks_col.find().sort('priority', -1))
+    for task in tasks:
+        task['_id'] = str(task['_id'])
+    return tasks
 
 def add_task(task_type, target, description, action='follow', priority=0):
     tasks_col.insert_one({
@@ -56,7 +59,10 @@ def delete_task(task_id):
     tasks_col.delete_one({'_id': ObjectId(task_id)})
 
 def get_episodes():
-    return list(episodes_col.find().sort('created_at', -1))
+    episodes = list(episodes_col.find().sort('created_at', -1))
+    for ep in episodes:
+        ep['_id'] = str(ep['_id'])
+    return episodes
 
 def add_episode(ep_id, title, link):
     episodes_col.insert_one({
@@ -110,7 +116,7 @@ async def check_other_tasks(user_id):
     incomplete = []
     tasks = get_tasks()
     for task in tasks:
-        task_id = str(task['_id'])
+        task_id = task['_id']
         if has_completed_task(user_id, task_id):
             continue
         if task['type'] == 'channel':
@@ -179,7 +185,7 @@ async def show_main_menu(user_id, context, message, edit=False):
     episodes = get_episodes()
     if episodes:
         keyboard = get_main_keyboard(user_id, [], episodes)
-        text = "🎬 *مرحباً بك!*\nاختر الحلقة التي تريد مشاهدتها:"
+        text = "🎬 *مرحباً بك!\nاختر الحلقة التي تريد مشاهدتها:*"
         await message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
     else:
         keyboard = ReplyKeyboardMarkup([["تحديث"]], resize_keyboard=True)
@@ -206,9 +212,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
 
-    if user_id == ADMIN_ID and context.user_data.get('admin_state'):
-        await admin_text_handler(update, context)
-        return
+    # إذا كان المستخدم أدمن وليس في حالة انتظار، نمرر الأمر إلى admin_text_handler إذا كان من أوامر الأدمن
+    if user_id == ADMIN_ID and not context.user_data.get('admin_state'):
+        admin_commands = [
+            "اضافة حلقة", "تعديل حلقة", "حذف حلقة",
+            "اضافة مهمة", "عرض المهام", "حذف مهمة",
+            "الاحصائيات", "ارسال اشعار", "تبديل الوضع",
+            "طلبات التحقق", "رجوع"
+        ]
+        if text in admin_commands:
+            await admin_text_handler(update, context)
+            return
 
     if text == "تم الاشتراك":
         if await is_subscribed(user_id, context):
@@ -230,7 +244,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tasks = get_tasks()
     for task in tasks:
         if text == f"مهمة: {task['description']}":
-            task_id = str(task['_id'])
+            task_id = task['_id']
             context.user_data['pending_task_id'] = task_id
             context.user_data['awaiting_screenshot'] = True
             await update.message.reply_text(
@@ -493,6 +507,8 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📢 *طلب تحقق جديد*\nالمستخدم: {user_id}\nالمهمة: {task_desc}",
             parse_mode="Markdown"
         )
+        # إرسال الصورة أيضاً للأدمن
+        await context.bot.send_photo(ADMIN_ID, photo=file_id, caption=f"صورة التحقق من المستخدم {user_id}")
         await update.message.reply_text("✅ تم استلام لقطة الشاشة. سيتم مراجعتها من قبل الأدمن قريبًا.")
         context.user_data['awaiting_screenshot'] = False
         context.user_data['pending_task_id'] = None
@@ -517,7 +533,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending_id = data.split("_")[1]
         pending_verifications.delete_one({'_id': ObjectId(pending_id)})
         await query.edit_message_text("❌ تم رفض الطلب.")
-    await query.message.delete()
+    try:
+        await query.message.delete()
+    except:
+        pass
 
 def main():
     if tasks_col.count_documents({}) == 0:
