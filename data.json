@@ -1,0 +1,8 @@
+{
+  "task_link": "https://facebook.com/yourpage",
+  "task_text": "تابعنا على فيسبوك للحصول على الحلقة",
+  "episodes": {
+    "1": "https://t.me/your_channel/10",
+    "2": "https://t.me/your_channel/11"
+  }
+}
