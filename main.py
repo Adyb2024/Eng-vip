@@ -1,38 +1,33 @@
 import os
-import sqlite3
+import json
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# إعداد السجلات
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# إعداد السجلات (Logs)
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# جلب البيانات من الأسرار
+# الأسرار (جلبها من إعدادات جيت هوب)
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-CHANNEL_ID = os.getenv("CHANNEL_ID")  # معرف القناة مثل -100123456
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 
-# إعداد قاعدة البيانات
-def init_db():
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS episodes (id TEXT PRIMARY KEY, file_id TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
-    # إضافة قيم افتراضية للمهام
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('task_link', 'https://t.me/example')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('task_text', 'تابع حسابنا على تيك توك')")
-    conn.commit()
-    conn.close()
+# --- إدارة البيانات ---
+DATA_FILE = "data.json"
 
-def get_setting(key):
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    c.execute("SELECT value FROM settings WHERE key=?", (key,))
-    res = c.fetchone()
-    conn.close()
-    return res[0] if res else ""
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        default = {"task_link": "https://t.me/example", "task_text": "اشترك في قناتنا الأخرى", "episodes": {}}
+        save_data(default)
+        return default
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-# التحقق من الاشتراك الإجباري
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+# --- التحقق من الاشتراك الإجباري ---
 async def is_subscribed(user_id, context):
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
@@ -40,103 +35,101 @@ async def is_subscribed(user_id, context):
     except Exception:
         return False
 
-# رسالة البداية
+# --- الواجهة الرئيسية ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    data = load_data()
+
     if not await is_subscribed(user_id, context):
         invite_link = f"https://t.me/{CHANNEL_ID.replace('-100', '')}"
-        keyboard = [[InlineKeyboardButton("الاشتراك في القناة 📢", url=invite_link)],
-                    [InlineKeyboardButton("تم الاشتراك ✅", callback_data="check_sub")]]
-        await update.message.reply_text("مرحباً بك! لكي تستخدم البوت، يجب عليك الاشتراك في القناة أولاً.", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [[InlineKeyboardButton("انضم للقناة أولاً 📢", url=invite_link)],
+                    [InlineKeyboardButton("تم الاشتراك ✅ تحقّق الآن", callback_data="check_sub")]]
+        await update.message.reply_text("⚠️ توقف! للاستفادة من البوت وفتح الحلقات، يجب عليك الاشتراك في القناة أولاً.", 
+                                       reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    keyboard = [[InlineKeyboardButton("قائمة الحلقات 📺", callback_data="list_eps")]]
-    await update.message.reply_text("أهلاً بك في بوت المسلسلات! اختر ما تريد:", reply_markup=InlineKeyboardMarkup(keyboard))
+    # إذا كان المشترك هو الأدمن، تظهر له لوحة التحكم أيضاً
+    keyboard = [[InlineKeyboardButton("📺 قائمة الحلقات", callback_data="list_eps")]]
+    if user_id == ADMIN_ID:
+        keyboard.append([InlineKeyboardButton("⚙️ لوحة تحكم الأدمن", callback_data="admin_panel")])
+        
+    await update.message.reply_text("✅ أهلاً بك مجدداً! اختر ما تريد من الأسفل:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# معالجة الضغط على الأزرار
+# --- معالجة الضغط على الأزرار ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
+    db = load_data()
     await query.answer()
 
     if query.data == "check_sub":
         if await is_subscribed(user_id, context):
-            await query.edit_message_text("تم التحقق! أرسل /start للبدء.")
+            await query.edit_message_text("✅ أحسنت! تم التحقق من اشتراكك بنجاح. أرسل /start للبدء.")
         else:
-            await query.answer("لم تشترك بعد!", show_alert=True)
+            await query.answer("❌ لم تشترك بعد! يرجى الانضمام للقناة والمحاولة مرة أخرى.", show_alert=True)
 
     elif query.data == "list_eps":
-        conn = sqlite3.connect('bot_data.db')
-        c = conn.cursor()
-        c.execute("SELECT id FROM episodes")
-        eps = c.fetchall()
-        conn.close()
-        
-        if not eps:
-            await query.edit_message_text("لا توجد حلقات مضافة حالياً.")
+        if not db["episodes"]:
+            await query.edit_message_text("📭 لا توجد حلقات مضافة حالياً.")
             return
-
-        keyboard = [[InlineKeyboardButton(f"الحلقة {e[0]}", callback_data=f"get_{e[0]}")] for e in eps]
-        await query.edit_message_text("اختر الحلقة التي تريدها:", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [[InlineKeyboardButton(f"🎬 حلقة رقم {k}", callback_data=f"get_{k}")] for k in db["episodes"].keys()]
+        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_home")])
+        await query.edit_message_text("📺 اختر الحلقة التي تريد مشاهدتها:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data.startswith("get_"):
         ep_id = query.data.split("_")[1]
-        task_url = get_setting('task_link')
-        task_text = get_setting('task_text')
-        
-        keyboard = [[InlineKeyboardButton(task_text, url=task_url)],
-                    [InlineKeyboardButton("تم تنفيذ المهمة ✅", callback_data=f"verify_{ep_id}")]]
-        await query.edit_message_text(f"للحصول على الحلقة {ep_id}، أكمل المهمة التالية أولاً:", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [[InlineKeyboardButton(db["task_text"], url=db["task_link"])],
+                    [InlineKeyboardButton("تم تنفيذ المهمة ✅", callback_data=f"show_{ep_id}")]]
+        await query.edit_message_text(f"🚀 للحصول على الحلقة رقم {ep_id}، يرجى تنفيذ المهمة التالية أولاً:", 
+                                       reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif query.data.startswith("verify_"):
+    elif query.data.startswith("show_"):
         ep_id = query.data.split("_")[1]
-        # هنا التحقق (تلقائي للأمانة)
-        conn = sqlite3.connect('bot_data.db')
-        c = conn.cursor()
-        c.execute("SELECT file_id FROM episodes WHERE id=?", (ep_id,))
-        file_id = c.fetchone()
-        conn.close()
-        
-        if file_id:
-            await context.bot.send_message(chat_id=user_id, text=f"شكراً لتنفيذ المهمة! تفضل الحلقة {ep_id}:")
-            # إرسال الملف (سواء كان رابط أو معرف ملف تليجرام)
-            await context.bot.send_message(chat_id=user_id, text=file_id[0])
+        link = db["episodes"].get(ep_id, "رابط مفقود")
+        await query.edit_message_text(f"🎁 تفضل الحلقة رقم {ep_id}:\n\n{link}\n\nمشاهدة ممتعة!")
 
-# أوامر الأدمن
-async def add_episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    try:
-        _, ep_id, link = update.message.text.split(" ", 2)
-        conn = sqlite3.connect('bot_data.db')
-        c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO episodes VALUES (?, ?)", (ep_id, link))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(f"✅ تم إضافة الحلقة {ep_id} بنجاح.")
-    except:
-        await update.message.reply_text("الرجاء استخدام الصيغة: /add رقم_الحلقة الرابط")
+    elif query.data == "admin_panel":
+        if user_id != ADMIN_ID: return
+        keyboard = [
+            [InlineKeyboardButton("➕ إضافة حلقة", callback_data="add_ep")],
+            [InlineKeyboardButton("🔗 تعديل رابط المهمة", callback_data="edit_task")],
+            [InlineKeyboardButton("📝 تعديل نص المهمة", callback_data="edit_text")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")]
+        ]
+        await query.edit_message_text("🛠️ أهلاً بك يا مدير! ماذا تريد أن تفعل؟", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def update_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    try:
-        _, link = update.message.text.split(" ", 1)
-        conn = sqlite3.connect('bot_data.db')
-        c = conn.cursor()
-        c.execute("UPDATE settings SET value=? WHERE key='task_link'", (link,))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(f"✅ تم تحديث رابط المهمة إلى: {link}")
-    except:
-        await update.message.reply_text("استخدم: /set_task الرابط")
+    elif query.data == "back_home":
+        await start(update, context)
 
+    # أوامر الأدمن التفاعلية (إضافة حلقة)
+    elif query.data == "add_ep":
+        await query.edit_message_text("أرسل الآن رقم الحلقة متبوعاً بالرابط بهذا الشكل:\n\n`1 https://t.me/your_channel/123`", parse_mode="Markdown")
+        context.user_data['action'] = 'adding_ep'
+
+# --- معالجة الرسائل النصية (للأدمن) ---
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID: return
+    
+    action = context.user_data.get('action')
+    text = update.message.text
+    db = load_data()
+
+    if action == 'adding_ep':
+        try:
+            ep_id, link = text.split(" ", 1)
+            db["episodes"][ep_id] = link
+            save_data(db)
+            await update.message.reply_text(f"✅ تم بنجاح إضافة الحلقة {ep_id}")
+            context.user_data['action'] = None
+        except:
+            await update.message.reply_text("❌ خطأ! أرسل (الرقم ثم مسافة ثم الرابط)")
+
+# --- التشغيل ---
 if __name__ == '__main__':
-    init_db()
     app = Application.builder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("add", add_episode))
-    app.add_handler(CommandHandler("set_task", update_task))
     app.add_handler(CallbackQueryHandler(button_handler))
-    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     print("Bot is running...")
     app.run_polling()
